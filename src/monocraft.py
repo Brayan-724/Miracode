@@ -13,124 +13,104 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-import os
-import fontforge
-import json
 import math
-from generate_diacritics import generateDiacritics
-from generate_examples import generateExamples
+
+from generateFont import Font
 from polygonizer import PixelImage, generatePolygons
-from generate_continuous_ligatures import generate_continuous_ligatures 
 
-PIXEL_SIZE = 120
+# PIXEL_SIZE = 120
 
-characters = json.load(open("./characters.json"))
-diacritics = json.load(open("./diacritics.json"))
-ligatures = json.load(open("./ligatures.json"))
-ligatures += generate_continuous_ligatures("./continuous_ligatures.json")
+# ligatures += generate_continuous_ligatures("./continuous_ligatures.json")
 
-characters = generateDiacritics(characters, diacritics)
-charactersByCodepoint = {}
+SIZES = {
+    # "Thin": 1000,
+    # "ExtraLight": 464,
+    # "Light": 420,
+    # "Normal": 120,
+    # "Medium": 332,
+    # "SemiBold": 288,
+    # "Bold": 244,
+    "Black": 10,
+}
 
-def generateFont():
-	monocraft = fontforge.font()
-	monocraft.fontname = "Monocraft"
-	monocraft.familyname = "Monocraft"
-	monocraft.fullname = "Monocraft"
-	monocraft.copyright = "Idrees Hassan, https://github.com/IdreesInc/Monocraft"
-	monocraft.encoding = "UnicodeFull"
-	monocraft.version = "3.0"
-	monocraft.weight = "Regular"
-	monocraft.ascent = PIXEL_SIZE * 8
-	monocraft.descent = PIXEL_SIZE
-	monocraft.em = PIXEL_SIZE * 9
-	monocraft.upos = -PIXEL_SIZE # Underline position
-	monocraft.addLookup("ligatures", "gsub_ligature", (), (("liga",(("dflt",("dflt")),("latn",("dflt")))),))
-	monocraft.addLookupSubtable("ligatures", "ligatures-subtable")
+class MonocraftFont(Font):
+    def __init__(self):
+        super().__init__("Monocraft", SIZES)
 
-	for character in characters:
-		charactersByCodepoint[character["codepoint"]] = character
-		monocraft.createChar(character["codepoint"], character["name"])
-		pen = monocraft[character["name"]].glyphPen()
-		top = 0
-		drawn = character
+    def drawChar(self, size, font, character):
+        font.createChar(character["codepoint"], character["name"])
+        pen = font[character["name"]].glyphPen()
 
-		image, kw = generateImage(character)
-		drawImage(image, pen, **kw)
-		monocraft[character["name"]].width = PIXEL_SIZE * 6
-	print(f"Generated {len(characters)} characters")
+        image, kw = self.generateImage(character)
+        self.drawImage(size, image, pen, **kw)
+        font[character["name"]].width = size * 6
 
-	outputDir = "../dist/"
-	if not os.path.exists(outputDir):
-		os.makedirs(outputDir)
+    def drawLigature(self, size, font, ligature):
+        lig = font.createChar(-1, ligature["name"])
+        pen = font[ligature["name"]].glyphPen()
+        image, kw = self.generateImage(ligature)
+        self.drawImage(size, image, pen, **kw)
+        font[ligature["name"]].width = size * len(ligature["sequence"]) * 6
+        lig.addPosSub("ligatures-subtable", tuple(map(lambda codepoint: self.charactersByCodepoint[codepoint]["name"], ligature["sequence"])))
 
-	monocraft.generate(outputDir + "Monocraft-no-ligatures.ttf")
-	for ligature in ligatures:
-		lig = monocraft.createChar(-1, ligature["name"])
-		pen = monocraft[ligature["name"]].glyphPen()
-		image, kw = generateImage(ligature)
-		drawImage(image, pen, **kw)
-		monocraft[ligature["name"]].width = PIXEL_SIZE * len(ligature["sequence"]) * 6
-		lig.addPosSub("ligatures-subtable", tuple(map(lambda codepoint: charactersByCodepoint[codepoint]["name"], ligature["sequence"])))
-	print(f"Generated {len(ligatures)} ligatures")
+    def generateImage(self, character):
+        image = PixelImage()
+        kw = {}
+        if "pixels" in character:
+            arr = character["pixels"]
+            leftMargin = character["leftMargin"] if "leftMargin" in character else 0
+            x = math.floor(leftMargin)
+            kw['dx'] = leftMargin - x
+            descent = -character["descent"] if "descent" in character else 0
+            y = math.floor(descent)
+            kw['dy'] = descent - y
+            image = image | self.imageFromArray(arr, x, y)
 
-	monocraft.generate(outputDir + "Monocraft.ttf")
-	monocraft.generate(outputDir + "Monocraft.otf")
+        if "reference" in character:
+            other = self.generateImage(self.charactersByCodepoint[character["reference"]])
+            kw.update(other[1])
+            image = image | other[0]
 
-def generateImage(character):
-	image = PixelImage()
-	kw = {}
-	if "pixels" in character:
-		arr = character["pixels"]
-		leftMargin = character["leftMargin"] if "leftMargin" in character else 0
-		x = math.floor(leftMargin)
-		kw['dx'] = leftMargin - x
-		descent = -character["descent"] if "descent" in character else 0
-		y = math.floor(descent)
-		kw['dy'] = descent - y
-		image = image | imageFromArray(arr, x, y)
-	if "reference" in character:
-		other = generateImage(charactersByCodepoint[character["reference"]])
-		kw.update(other[1])
-		image = image | other[0]
-	if "diacritic" in character:
-		diacritic = diacritics[character["diacritic"]]
-		arr = diacritic["pixels"]
-		x = image.x
-		y = findHighestY(image) + 1
-		if "diacriticSpace" in character:
-			y += int(character["diacriticSpace"])
-		image = image | imageFromArray(arr, x, y)
-	return (image, kw)
+        if "diacritic" in character:
+            diacritic = self.diacritics[character["diacritic"]]
+            arr = diacritic["pixels"]
+            x = image.x
+            y = self.findHighestY(image) + 1
 
-def findHighestY(image):
-	for y in range(image.y_end - 1, image.y, -1):
-		for x in range(image.x, image.x_end):
-			if image[x, y]:
-				return y
-	return image.y
+            if "diacriticSpace" in character:
+                y += int(character["diacriticSpace"])
 
-def imageFromArray(arr, x=0, y=0):
-	return PixelImage(
-		x=x,
-		y=y,
-		width=len(arr[0]),
-		height=len(arr),
-		data=bytes(x for a in reversed(arr) for x in a),
-	)
+            image = image | self.imageFromArray(arr, x, y)
 
-def drawImage(image, pen, *, dx=0, dy=0):
-	for polygon in generatePolygons(image):
-		start = True
-		for x, y in polygon:
-			x = (x + dx) * PIXEL_SIZE
-			y = (y + dy) * PIXEL_SIZE
-			if start:
-				pen.moveTo(x, y)
-				start = False
-			else:
-				pen.lineTo(x, y)
-		pen.closePath()
+        return (image, kw)
 
-generateFont()
-generateExamples(characters, ligatures, charactersByCodepoint)
+    def findHighestY(self, image):
+        for y in range(image.y_end - 1, image.y, -1):
+            for x in range(image.x, image.x_end):
+                if image[x, y]:
+                    return y
+        return image.y
+
+    def imageFromArray(self, arr, x=0, y=0):
+        return PixelImage(
+            x=x,
+            y=y,
+            width=len(arr[0]),
+            height=len(arr),
+            data=bytes(x for a in reversed(arr) for x in a),
+        )
+
+    def drawImage(self, size, image, pen, *, dx=0, dy=0):
+        for polygon in generatePolygons(image):
+            start = True
+            for x, y in polygon:
+                x = (x + dx) * size
+                y = (y + dy) * size
+                if start:
+                    pen.moveTo(x, y)
+                    start = False
+                else:
+                    pen.lineTo(x, y)
+            pen.closePath()
+
+MonocraftFont().build()
